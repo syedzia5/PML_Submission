@@ -1,0 +1,323 @@
+---
+title: "Practical Machine Learning Project Report"
+output: html_document
+---
+
+```{r set_options, echo=FALSE}
+options(warn = -1)
+```
+
+```{r load_packages, echo=FALSE, results='hide'}
+loadPackages <- function(pkgnm)
+{
+  if(pkgnm %in% rownames(installed.packages()) == FALSE)
+	{
+		suppressMessages(suppressWarnings(suppinstall.packages(pkgnm,repos="http://cran.rstudio.com/"))) 
+	}
+	suppressMessages(suppressWarnings(require(pkgnm, character.only = TRUE)))
+}
+reqPkg <- c("caret", "ipred", "rpart", "randomForest", "gbm", "lda","plyr","e1071")
+sapply(reqPkg, FUN = loadPackages)
+
+```
+
+#Overview
+
+6 participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. While execising, data was collected from accelerometers on their belt, forearm, arm, and dumbell. 
+
+The goal of this project is to predict the manner in which the subjects did the exercise. This is the "classe" variable in the training set.
+
+The data provided for project is in 2 parts:
+
+* pml_training.csv: Data to be used for training the models
+* pml_testing.csv: Data for which activity to be predicted
+
+The training data is divided into train and test set(70%, 30% respectivly). Following algorithms were used to build models:
+
+* Decision Tree
+* Random Forest
+* Bagging
+* Boosting
+* Linear Discriminant Analysis
+
+The models were build using 10-fold cross validation on the train set and were tesed on the test set. Concordance(kappa) is used to estimate out of sample error. The model with highest Kappa was selected for predicting the activity for the data in the pml_testing.csv(Course Project Submission)
+
+The 'train' command of the caret package has been used to build the model.
+
+#Load Data
+
+In this section we read the data from pml-training.csv which has been already downloaded from the course website.
+
+```{r read__training_data, echo=TRUE, cache=TRUE}
+pml_training <- read.csv("pml-training.csv")
+dim(pml_training)
+```
+
+
+#Data Preprocessing
+
+This section we pre-process the data before finally creating the taining and test set.
+
+##Remove near zero variance variables
+
+In this section we find the zero-variance variables and filter them out.
+```{r remove_near_zero, echo=TRUE, cache=TRUE}
+nzvout <- nearZeroVar(pml_training, saveMetrics = TRUE)
+pml_training_non_nzv <- pml_training[,rownames(nzvout[!nzvout$nzv,])]
+```
+
+
+###Remove variables with more than 40% NA
+Some of the variables have a large amount of NA. In this section we filter the variables that have more than 40% items as NA
+
+We also filter out the following variables as they have no relation to activity identification:
+
+  * "X"
+  * "user_name"
+
+We also filter out "cvtd_timestamp" as the same information is captured by "raw_timestamp_part_1" and   "raw_timestamp_part_2" which are numeric. It is better to use numeric predictor than factor or character.
+
+
+```{r further_pre_proc, echo = TRUE, cache = TRUE}
+thrsh <- dim(pml_training)[1]*.4
+
+pml_training_non_nzv_nona <- apply(pml_training_non_nzv, 2, function(x,y) if(length(x[is.na(x)]) < y) x, y = thrsh)
+
+n.obs <- sapply(pml_training_non_nzv_nona, length)
+seq.max <- seq_len(max(n.obs))
+pml_training_non_nzv_nona <- pml_training_non_nzv_nona[n.obs != 0]
+pml_training_non_nzv_nona <- sapply(pml_training_non_nzv_nona, "[", i = seq.max)
+pml_training_non_nzv_nona <- data.frame(pml_training_non_nzv_nona)
+
+pml_training_non_nzv_nona[,c(3,4,6:58)] <- sapply(pml_training_non_nzv_nona[,c(3,4,6:58)], as.character)
+pml_training_non_nzv_nona[,c(3,4,6:58)] <- sapply(pml_training_non_nzv_nona[,c(3,4,6:58)], as.numeric)
+sub_pml_training_non_nzv_nona <- pml_training_non_nzv_nona[,c(3,4,6:59)]
+```
+
+###Split into training and test set
+In this section we split the data into training subset and test subset(70:30 ratio).
+
+```{r split_training_data, echo=TRUE, cache=TRUE}
+set.seed(19211)
+inTrain <- createDataPartition(y=sub_pml_training_non_nzv_nona$classe,p=0.7, list=FALSE)
+training <- sub_pml_training_non_nzv_nona[inTrain,]; testing <- sub_pml_training_non_nzv_nona[-inTrain,]
+```
+
+
+```{r do_PCA, echo=FALSE, cache=TRUE}
+preProc <- preProcess(training[,-56],method="pca")
+trainPC <- predict(preProc,training[,-56])
+testPC <- predict(preProc,testing[,-56])
+```
+
+
+### Decision Tree
+Let's build a model based on decision tree algorithm - rpart. 
+```{r alogo_rpart, echo=FALSE, cache=TRUE, results="hide"}
+tbtrn <- table(training$classe)
+sumtbtrn <- sum(tbtrn)
+trnrat <- c(tbtrn["A"]/sumtbtrn, tbtrn["B"]/sumtbtrn,tbtrn["C"]/sumtbtrn,tbtrn["D"]/sumtbtrn, tbtrn["E"]/sumtbtrn)
+tbtrn <- table(testing$classe)
+sumtbtrn <- sum(tbtrn)
+tstrat <- c(tbtrn["A"]/sumtbtrn, tbtrn["B"]/sumtbtrn,tbtrn["C"]/sumtbtrn,tbtrn["D"]/sumtbtrn, tbtrn["E"]/sumtbtrn)
+
+treeFit <- train(training$classe ~ .,method="rpart",data=training[,-56], parms = list(prior = trnrat, split = "information"), trControl = trainControl(method = "cv", number = 10))
+confusionMatrix(testing$classe, predict(treeFit, newdata = testing[,-56]))
+```
+
+<b>
+```{r dt_call, echo = FALSE, results="asis"}
+treeFit$call
+```
+
+</b>
+
+```{r cm_rpart, echo=FALSE}
+cmrpart <- confusionMatrix(testing$classe, predict(treeFit, newdata = testing[,-56]))
+```
+
+Metrics:
+
+* Accuracy = `r cmrpart$overall["Accuracy"]`
+* Kappa    = `r cmrpart$overall["Kappa"]`
+
+
+<b>As can be seen from above the Kappa(concordance) value for decision tree model is `r cmrpart$overall["Kappa"]` which is quite low hence can't use this for prediction.</b>
+
+### Random Forest
+```{r algo_rf, echo=FALSE, cache=TRUE, results="hide"}
+rfFit <- train(training[,-56], training$classe, method="rf", trControl = trainControl(method = "cv", number = 10))
+confusionMatrix(testing$classe, predict(rfFit, newdata = testing[,-56]))
+```
+
+```{r cm_rf, echo=FALSE}
+cmrf <- confusionMatrix(testing$classe, predict(rfFit, newdata = testing[,-56]))
+```
+
+<b>
+```{r rf_call, echo = FALSE, results="asis"}
+rfFit$call
+```
+
+</b>
+
+
+Metrics:
+
+* Accuracy = `r cmrf$overall["Accuracy"]`
+* Kappa    = `r cmrf$overall["Kappa"]`
+
+
+<b>As can be seen from the above, the Kappa(concordance) value for random forest model is `r cmrf$overall["Kappa"]` which is quite good and can be used for prediction.</b>
+
+### Boosting
+```{r algo_gbm, echo=FALSE, cache=TRUE, results="hide"}
+
+gbmFit <- train(training$classe ~ ., method="gbm", data=training[,-56], verbose = FALSE, trControl = trainControl(method = "cv", number = 10))
+confusionMatrix(testing$classe, predict(gbmFit, newdata = testing[,-56]))
+
+```
+
+```{r cm_gbm, echo=FALSE}
+cmgbm <- confusionMatrix(testing$classe, predict(gbmFit, newdata = testing[,-56]))
+
+```
+
+<b>
+```{r gbm_call, echo = FALSE, results="asis"}
+gbmFit$call
+```
+
+</b>
+
+
+Metrics:
+
+* Accuracy = `r cmgbm$overall["Accuracy"]`
+* Kappa    = `r cmgbm$overall["Kappa"]`
+
+
+<b>As can be seen from above, the Kappa(concordance) value for boosting model is `r cmgbm$overall["Kappa"]` which is quite good and can be used for prediction.</b>
+
+###LDA
+```{r algo_lda, echo=FALSE, cache=TRUE, results="hide"}
+ldaFit <- train(training$classe ~ ., method="lda", data=training[,-56], verbose = FALSE, trControl = trainControl(method = "cv", number = 10))
+confusionMatrix(testing$classe, predict(ldaFit, newdata = testing[,-56]))
+```
+
+```{r cm_lda, echo=FALSE}
+cmlda <- confusionMatrix(testing$classe, predict(ldaFit, newdata = testing[,-56]))
+```
+
+<b>
+```{r lda_call, echo = FALSE, results="asis"}
+ldaFit$call
+```
+
+</b>
+
+
+Metrics:
+
+* Accuracy = `r cmlda$overall["Accuracy"]`
+* Kappa    = `r cmlda$overall["Kappa"]`
+
+
+<b>As can be seen from the above, the Kappa(concordance) value for boosting model is `r cmlda$overall["Kappa"]` which is also quite good and can be used for prediction.</b>
+
+###Bagging
+```{r algo_treebag, echo=FALSE, cache=TRUE, results="hide"}
+bagFit <- train(x = training[,-56], y = training$classe,method="treebag",trControl = trainControl(method = "cv", number = 10))
+confusionMatrix(testing$classe, predict(bagFit, newdata = testing[,-56]))
+```
+
+
+```{r cm_bag, echo=FALSE}
+cmbag <- confusionMatrix(testing$classe, predict(bagFit, newdata = testing[,-56]))
+```
+
+<b>
+```{r bag_call, echo = FALSE, results="asis"}
+bagFit$call
+```
+
+</b>
+
+
+Metrics:
+
+* Accuracy = `r cmbag$overall["Accuracy"]`
+* Kappa    = `r cmbag$overall["Kappa"]`
+
+
+<b>As can be seen from the above the Kappa(concordance) value for boosting model is `r cmbag$overall["Kappa"]` which is also quite good and can be used for prediction.</b>
+
+
+#Conclusion
+
+As can be seen in the presvious sections, algorithms that use some sort of aggregation/combination of models using other algorithms create better and more accurate models.
+
+Of the models built above, Random Forest, Boosting and Bagging all have accuracy of approx 1.0(100%). Any of these can be used for prediction of the course project test set(pml_testing.csv). 
+
+I will be using Boosting for predicting outcomes of the course project test data.
+
+#Appendix: Model Summaries and Confusion Matrices
+
+This section contains the summary of the models build and their confusion matrix on test set
+
+## Decision Tree
+###Summary
+```{r check_rpart, echo=FALSE}
+treeFit
+```
+
+###Confusion Matrix
+```{r check_rpart_cm, echo=FALSE}
+cmrpart
+```
+
+##Random Forest
+###Summary
+```{r check_rf, echo=FALSE}
+rfFit
+```
+
+###Confusion Matrix
+```{r check_rf_cm, echo=FALSE}
+cmrf
+```
+
+## Boosting
+###Summary
+```{r check_boost, echo=FALSE}
+gbmFit
+```
+
+###Confusion Matrix
+```{r check_boost_cm, echo=FALSE}
+cmgbm
+```
+
+##Linear Discriminant Analysis
+###Summary
+```{r check_lda, echo=FALSE}
+ldaFit
+```
+
+###Confusion Matrix
+```{r check_lda_cm, echo=FALSE}
+cmlda
+```
+
+
+###Bagging
+###Summary
+```{r check_bag, echo=FALSE}
+bagFit
+```
+
+###Confusion Matrix
+```{r check_bag_cm, echo=FALSE}
+cmbag
+```
+
